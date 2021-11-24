@@ -1,0 +1,161 @@
+  ===========================================================================================
+  =====										Demo 3									    =====
+  ===========================================================================================  
+  In this demo, 
+  1- we are going to learn about dvc pipelines (https://dvc.org/doc/start/data-pipelines)
+  2- Github Runners (https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners)
+  3- Adding a new runner to your github repository (https://docs.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners)
+  4- What are github secrets?
+  4- Take difference of model performance on different branches, so that our automated workflows can retun the complete summary of our new experiment
+  5- Our data will be hosted on Azure blob storage and we are going to use an Azure VM as our github runner
+
+  -----------------------------
+  STEPS
+  -----------------------------
+  
+  1- git clone https://github.com/ahmadghumman-creator/Demo3Test.git
+  
+  2- copy demo 3 data and files to this directory
+  
+  3- dir /b /a-d
+  
+  4- dvc init
+  
+  5- dvc add data\data_raw.csv
+  
+  6- git add data\data_raw.csv.dvc data\.gitignore
+  
+  7- dvc remote add -d myremote azure://container2/folder
+  
+  8- git add .
+  
+  9- git commit -m "Added data to dvc tracking, first code commit"
+  
+  10- git push
+  
+  11- dvc push (Authentication?)
+  
+  12- dvc remote modify --local myremote connection_string DefaultEndpointsProtocol=https;AccountName=myblobstorageaddo;AccountKey=8MbGjzaFTD1URmQ/A+0Rw0n4cgjMQA6wMv7PgSfU7+W3EeySwnU3AldN/j1E1G+phE2Ks69qxD8mfN4UO7b0NA==;EndpointSuffix=core.windows.net
+  
+  13- dvc push (This data is now DVC tracked, can be downloaded to any runner or dev machine and we can create versions of this data like earlier) 
+  
+  13- python preprocessing.py
+  
+  14- python feature_engineering.py
+  
+  15- python train.py (Creates a metrics.json file that contain results of the model)
+  
+  16- Now lets create a dvc pipeline, our pipeline should have two stages
+  
+  17- dvc run -n process_data -d preprocessing.py -o data_processed.csv --no-exec python preprocessing.py
+  
+  18- git add .gitignore dvc.yaml
+  
+  19- Add the following stages to our dvc.yaml file
+  
+stages:
+  process_data:
+    cmd: python preprocessing.py
+    deps:
+    - preprocessing.py
+    - data/data_raw.csv
+    outs:
+    - data_processed.csv
+  feature_engineering:
+    cmd: python feature_engineering.py
+    deps:
+    - feature_engineering.py
+    - data_processed.csv
+    outs:
+    - data_features.csv
+  train:
+    cmd: python train.py
+    deps:
+    - train.py
+    - data_features.csv
+    outs:
+    - results.png
+    metrics:
+    - metrics.json:
+        cache: false
+		
+  20- dvc repro (run the whole pipeline)
+  
+  21- dvc push
+  
+  21- now lets create a github workflow that uses a cml runner
+  
+  22- Add the .github/workflows/workflow.yaml file and add the following code
+  
+name: MLOpsDemoTest
+on: [push]
+jobs:
+  deploy-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: iterative/setup-cml@v1
+      - uses: actions/checkout@v2
+      - name: Deploy runner on AZVM
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}		  
+          REPO_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          cml-runner \
+            --cloud=azure \
+            --cloud-region=southeastasia \
+            --cloud-type=m \
+            --labels=cml-gpu \
+            --single=true \
+            --cloud-startup-script "IyEvYmluL2Jhc2gNCnN1ZG8gYXB0LWdldCBpbnN0YWxsIC15IFwNCiAgICBhcHQtdHJhbnNwb3J0LWh0dHBzIFwNCiAgICBjYS1jZXJ0aWZpY2F0ZXMgXA0KICAgIGN1cmwgXA0KICAgIHNvZnR3YXJlLXByb3BlcnRpZXMtY29tbW9uDQpjdXJsIC1mc1NMIGh0dHBzOi8vZG93bmxvYWQuZG9ja2VyLmNvbS9saW51eC91YnVudHUvZ3BnIHwgc3VkbyBhcHQta2V5IGFkZCAtDQpzdWRvIGFwdC1rZXkgZmluZ2VycHJpbnQgMEVCRkNEODgNCnN1ZG8gYWRkLWFwdC1yZXBvc2l0b3J5IFwNCiAgICJkZWIgW2FyY2g9YW1kNjRdIGh0dHBzOi8vZG93bmxvYWQuZG9ja2VyLmNvbS9saW51eC91YnVudHUgXA0KICAgJChsc2JfcmVsZWFzZSAtY3MpIFwNCiAgIHN0YWJsZSINCnN1ZG8gYXB0LWdldCB1cGRhdGUNCnN1ZG8gYXB0LWdldCBpbnN0YWxsIC15IGRvY2tlci1jZQ0Kc3VkbyBkb2NrZXIgcnVuIGhlbGxvLXdvcmxkDQojIExpbnV4IHBvc3QtaW5zdGFsbA0Kc3VkbyBncm91cGFkZCBkb2NrZXINCnN1ZG8gdXNlcm1vZCAtYUcgZG9ja2VyICRVU0VSDQpzdWRvIHN5c3RlbWN0bCBlbmFibGUgZG9ja2Vy"
+  train-model:
+    needs: deploy-runner
+    runs-on: [self-hosted, cml-gpu]
+    timeout-minutes: 4320 # 72h
+    container:
+      image: docker://ghcr.io/iterative/cml:0-dvc2-base1
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: '3.7'
+      - uses: iterative/setup-cml@v1
+      - name: Train model
+        env:
+          REPO_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          AZ_CS: ${{ secrets.CONN_STR_AZDLAT }}
+        run: |
+         pip install wget
+         pip install sklearn
+         pip install pandas
+         pip install seaborn
+         pip install matplotlib
+         pip install dvc
+         pip install dvc[azure]
+          
+         #echo ${{env.AZ_CS}}
+          
+         dvc remote modify --local myremote connection_string ${{env.AZ_CS}}
+          
+         echo "fetched data"
+          
+         dvc pull
+         dvc repro
+          
+         git fetch --prune
+         dvc metrics diff --show-md main >> report.md
+         echo "## Metrics"
+         cat metrics.json
+          
+         cml-publish metrics.json >> report.md
+         echo "## Showing the measures in a graph"
+         cml-publish results.png --md >> report.md 
+         cml-send-comment report.md
+		  
+  23- git add .
+  
+  24- git commit -am "Added pipeline and workflow"
+  
+  25- git push
